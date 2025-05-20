@@ -18,9 +18,8 @@ class Patient(BaseModel):
     Age: int
 
 # Load latest Production model from MLflow Model Registry
-mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow-server:5000"))
-model = mlflow.pyfunc.load_model(model_uri="models:/diabetes_rf_model@local")
-
+mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI"))
+model = mlflow.pyfunc.load_model(model_uri="MODEL_URI")
 
 app = FastAPI()
 

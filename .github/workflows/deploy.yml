@@ -1,0 +1,50 @@
+name: Deploy Model Service to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Export environment variables on EC2
+            export MLFLOW_TRACKING_URI="${{ secrets.MLFLOW_TRACKING_URI }}"
+            export MODEL_URI="${{ secrets.MODEL_URI }}"
+            
+            # Create the base folder if it doesn't exist
+            mkdir -p model-service
+            
+            # Only clone if the folder is empty
+            if [ -z "$(ls -A model-service)" ]; then
+            git clone https://github.com/MLOpsLab/model-service.git model-service
+            fi
+            
+            # Move into the project folder and update it
+            cd model-service
+            git pull origin main
+            
+            # Build the Docker image
+            docker build -t model-service .
+            
+            # Create a custom network (if it doesn't exist)
+            docker network create --driver bridge mlops-lab-net || true
+            
+            # Stop and remove the existing container if running
+            docker stop model-service || true
+            docker rm model-service || true
+            
+            # Run the new container with port mapping
+            docker run -d -p 5000:5000 --name model-service --network mlops-lab-net model-service
