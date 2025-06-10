@@ -24,7 +24,7 @@ class Patient(BaseModel):
 
 # Get environment variables
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI")
-MODEL_NAME = os.environ.get("MODEL_NAME")
+MODEL_NAME = os.environ.get("MODEL_NAME", "diabetes_model-training")
 RUN_ID = os.environ.get("RUN_ID", "f0aac2b2d54e4aafa3d8ea9dcd9de055")  # From your logs
 
 # Determine model URI based on available information
