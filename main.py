@@ -1,4 +1,7 @@
 import mlflow.pyfunc
+import boto3
+import joblib
+from io import BytesIO
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -22,50 +25,86 @@ class Patient(BaseModel):
     DiabetesPedigreeFunction: float
     Age: int
 
-# Get environment variables
+# Configuration from environment variables
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI")
-MODEL_NAME = os.environ.get("MODEL_NAME", "diabetes_model-training")
-RUN_ID = os.environ.get("RUN_ID", "f0aac2b2d54e4aafa3d8ea9dcd9de055")  # From your logs
+MODEL_NAME = os.environ.get("MODEL_NAME")
+RUN_ID = os.environ.get("RUN_ID", "f0aac2b2d54e4aafa3d8ea9dcd9de055")
+S3_BUCKET = os.environ.get("S3_BUCKET")
+S3_KEY = os.environ.get("S3_KEY", "models/diabetes_model.joblib")
 
-# Determine model URI based on available information
-if RUN_ID:
-    MODEL_URI = f"runs:/{RUN_ID}/model"
-    logger.info(f"Using model from run: {MODEL_URI}")
-elif MODEL_NAME:
-    MODEL_URI = f"models:/{MODEL_NAME}/latest"
-    logger.info(f"Using latest model from registry: {MODEL_URI}")
-else:
-    raise ValueError("Either RUN_ID or MODEL_NAME must be provided")
-
-# Create FastAPI app
 app = FastAPI(
     title="Diabetes Prediction API",
-    description="Predicts diabetes using MLflow model",
+    description="Predicts diabetes using model from MLflow or S3",
     version="1.0.0"
 )
 
-# Load model during startup
-@app.on_event("startup")
-async def load_model():
-    global model
-    logger.info(f"Setting MLflow tracking URI: {MLFLOW_TRACKING_URI}")
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-    logger.info(f"Loading model from: {MODEL_URI}")
+# Function to load model from S3
+def load_model_from_s3(bucket, key):
+    logger.info(f"Loading model from S3: s3://{bucket}/{key}")
     try:
-        model = mlflow.pyfunc.load_model(model_uri=MODEL_URI)
-        logger.info("Model loaded successfully")
+        s3_client = boto3.client('s3')
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        model_data = response['Body'].read()
+        model = joblib.load(BytesIO(model_data))
+        logger.info("Model loaded successfully from S3")
+        return model
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        # Let the application start, but predictions will fail
+        logger.error(f"Failed to load model from S3: {e}")
+        raise
+
+# Function to load model from MLflow
+def load_model_from_mlflow(uri):
+    logger.info(f"Loading model from MLflow: {uri}")
+    try:
+        model = mlflow.pyfunc.load_model(model_uri=uri)
+        logger.info("Model loaded successfully from MLflow")
+        return model
+    except Exception as e:
+        logger.error(f"Failed to load model from MLflow: {e}")
+        raise
+
+# Load model at startup
+@app.on_event("startup")
+async def startup_event():
+    global model, model_source
+
+    # Try MLflow first if configured
+    if MLFLOW_TRACKING_URI and (MODEL_NAME or RUN_ID):
+        try:
+            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
+            if RUN_ID:
+                model_uri = f"runs:/{RUN_ID}/model"
+            else:
+                model_uri = f"models:/{MODEL_NAME}/latest"
+
+            model = load_model_from_mlflow(model_uri)
+            model_source = "mlflow"
+            return
+        except Exception as e:
+            logger.warning(f"MLflow loading failed, falling back to S3: {e}")
+
+    # Fall back to S3 if MLflow fails or isn't configured
+    if S3_BUCKET and S3_KEY:
+        try:
+            model = load_model_from_s3(S3_BUCKET, S3_KEY)
+            model_source = "s3"
+        except Exception as e:
+            logger.error(f"S3 loading failed: {e}")
+            model_source = "none"
+    else:
+        logger.error("Neither MLflow nor S3 is properly configured")
+        model_source = "none"
 
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
+    is_healthy = hasattr(globals(), 'model') and 'model' in globals()
     return {
-        "status": "healthy" if "model" in globals() else "unhealthy",
-        "mlflow_tracking_uri": MLFLOW_TRACKING_URI,
-        "model_uri": MODEL_URI
+        "status": "healthy" if is_healthy else "unhealthy",
+        "model_source": model_source if is_healthy else "none",
+        "mlflow_uri": MLFLOW_TRACKING_URI,
+        "s3_location": f"s3://{S3_BUCKET}/{S3_KEY}" if S3_BUCKET and S3_KEY else None
     }
 
 @app.post("/predict")
@@ -92,4 +131,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"Starting API server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
-
