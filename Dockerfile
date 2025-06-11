@@ -10,7 +10,7 @@ RUN apt-get update && \
 COPY main.py /app/model_service.py
 
 RUN pip install --no-cache-dir \
-    fastapi uvicorn pandas scikit-learn mlflow
+    fastapi uvicorn pandas scikit-learn mlflow boto3
 
 EXPOSE 8000
 
